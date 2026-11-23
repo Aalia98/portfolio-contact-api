@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,8 @@ type config struct {
 	smtpUser       string
 	smtpPass       string
 	notifyTo       string
+	resendKey      string
+	mailFrom       string
 }
 
 func loadConfig() config {
@@ -55,6 +58,8 @@ func loadConfig() config {
 		smtpUser:       os.Getenv("SMTP_USER"),
 		smtpPass:       os.Getenv("SMTP_PASS"),
 		notifyTo:       os.Getenv("NOTIFY_TO"),
+		resendKey:      os.Getenv("RESEND_API_KEY"),
+		mailFrom:       getenv("MAIL_FROM", "Portfolio <onboarding@resend.dev>"),
 	}
 }
 
@@ -214,11 +219,57 @@ func (s *server) handleContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.notify != nil {
-		if err := s.notify(m); err != nil {
-			log.Printf("notify failed (message was saved): %v", err)
-		}
+		// Send in the background so a slow mail provider never delays the visitor.
+		go func(m message) {
+			if err := s.notify(m); err != nil {
+				log.Printf("notify failed (message was saved): %v", err)
+			}
+		}(m)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+// resendNotifier emails via Resend's HTTPS API. Many free hosts block SMTP
+// ports, HTTPS always works.
+func resendNotifier(c config) func(message) error {
+	if c.resendKey == "" || c.notifyTo == "" {
+		return nil
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	return func(m message) error {
+		payload, err := json.Marshal(map[string]any{
+			"from":     c.mailFrom,
+			"to":       []string{c.notifyTo},
+			"reply_to": m.Email,
+			"subject":  "Portfolio message from " + m.Name,
+			"text":     m.Message + "\n\nReply to: " + m.Email,
+		})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequest(http.MethodPost, "https://api.resend.com/emails", bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.resendKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return errors.New("resend returned " + resp.Status)
+		}
+		return nil
+	}
+}
+
+func pickNotifier(c config) func(message) error {
+	if n := resendNotifier(c); n != nil {
+		return n
+	}
+	return smtpNotifier(c)
 }
 
 func smtpNotifier(c config) func(message) error {
@@ -248,7 +299,7 @@ func main() {
 		cfg:     cfg,
 		limiter: newLimiter(5, time.Hour), // 5 messages per IP per hour
 		store:   &store{path: cfg.dataFile},
-		notify:  smtpNotifier(cfg),
+		notify:  pickNotifier(cfg),
 	}
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
