@@ -30,6 +30,7 @@ curl -X POST localhost:8080/api/contact \
 | `PORT` | Port to listen on | `8080` |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call the API | `http://localhost:5173` |
 | `DATA_FILE` | Where messages are appended | `messages.jsonl` |
+| `RESEND_API_KEY`, `NOTIFY_TO`, `MAIL_FROM` | Email notification through Resend's HTTPS API (works on hosts that block SMTP, free plan can send to your own account email) | off |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Optional email notification (for example Gmail with an app password) | off |
 | `NOTIFY_TO` | Address that receives notifications | off |
 
